@@ -1,0 +1,235 @@
+<title>Local Agent Loop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a document with two figures (where things run, how the loop turns), then a trace and a memory bar. */
+  :root {
+    --bg: #f2f5f7;
+    --fg: #14202b;
+    --muted: #55646f;
+    --line: #9aa8b3;
+    --surface: #ffffff;
+    --host: #fbeed2;      /* macOS host region */
+    --host-line: #b5832a;
+    --vm: #dfeaf7;        /* Colima VM region */
+    --vm-line: #3d6ea8;
+    --accent: #0b7d73;    /* tool-call path */
+    --font-body: "IBM Plex Sans", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f171e; --fg: #e3eaf0; --muted: #98a8b4; --line: #5b6c79;
+      --surface: #18232c; --host: #2d2616; --host-line: #d6a04a;
+      --vm: #14263a; --vm-line: #6fa3dd; --accent: #3fcfbf; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f171e; --fg: #e3eaf0; --muted: #98a8b4; --line: #5b6c79;
+    --surface: #18232c; --host: #2d2616; --host-line: #d6a04a;
+    --vm: #14263a; --vm-line: #6fa3dd; --accent: #3fcfbf; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55; padding-inline: 16px; padding-block: 28px 56px; }
+  main { max-width: 1040px; margin: 0 auto; display: grid; gap: 40px; }
+  h1 { font-size: clamp(26px, 4vw, 36px); line-height: 1.15; margin: 0 0 8px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); font-weight: 600; margin: 0 0 12px; }
+  p { margin: 0; max-width: 68ch; }
+  .lede { color: var(--muted); font-size: 16px; }
+  code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+  figure { margin: 0; }
+  .scroll { overflow-x: auto; }
+  .scroll svg { display: block; min-width: 720px; width: 100%; height: auto; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; max-width: 76ch; }
+
+  /* svg parts */
+  svg { color: var(--fg); font-family: var(--font-body); }
+  svg text { fill: currentColor; font-size: 13px; }
+  svg .sub { font-size: 11px; fill: var(--muted); }
+  svg .m { font-family: var(--font-mono); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .lbl-a { font-size: 11px; fill: var(--accent); font-weight: 500; }
+  svg .zone-t { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  svg .node { fill: var(--surface); stroke: var(--line); stroke-width: 1.3; }
+  svg .node-a { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+  svg .vm { fill: var(--vm); stroke: var(--vm-line); stroke-width: 1.3; stroke-dasharray: 6 4; }
+  svg .host { fill: var(--host); stroke: var(--host-line); stroke-width: 1.3; stroke-dasharray: 6 4; }
+  svg .vm-t { fill: var(--vm-line); }
+  svg .host-t { fill: var(--host-line); }
+  svg .ln { stroke: var(--fg); stroke-width: 1.5; fill: none; }
+  svg .ln-a { stroke: var(--accent); stroke-width: 2; fill: none; }
+  svg .ln-d { stroke: var(--line); stroke-width: 1.3; fill: none; stroke-dasharray: 4 3; }
+  svg .mk { fill: var(--fg); }
+  svg .mk-a { fill: var(--accent); }
+  svg .mk-d { fill: var(--line); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tag { font-family: var(--font-mono); font-size: 12px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; white-space: nowrap; }
+  .tag.tool { border-color: var(--accent); color: var(--accent); }
+
+  .bar { display: flex; height: 26px; border: 1px solid var(--line); background: var(--surface); }
+  .bar > span { display: block; height: 100%; }
+  .b1 { background: var(--host-line); }
+  .b2 { background: var(--vm-line); }
+  .b3 { background: var(--accent); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
+  .scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+</style>
+
+<main>
+  <header>
+    <h1>Local Agent Loop</h1>
+    <p class="lede">A chat in the browser, a Qwen model on this MacBook, and one calculator tool the model can call. Everything except the model is created by Terraform.</p>
+  </header>
+
+  <section>
+    <h2>Where each piece runs</h2>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 1000 420" role="img" aria-label="Browser talks to Open WebUI and the agent inside a Colima Docker VM. The agent calls Ollama on the macOS host, and calls its own calculator function. Terraform creates the containers; a bootstrap script pulls the model.">
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk-a" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk-d" d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+
+          <!-- zones -->
+          <rect class="vm" x="170" y="70" width="440" height="330" rx="6"/>
+          <text class="zone-t vm-t" x="184" y="92">Colima VM · Docker · capped at 4 GiB</text>
+          <rect class="host" x="690" y="70" width="300" height="330" rx="6"/>
+          <text class="zone-t host-t" x="704" y="92">macOS host · Metal GPU</text>
+
+          <!-- Terraform -->
+          <rect class="node" x="300" y="8" width="180" height="34" rx="4"/>
+          <text x="390" y="30" text-anchor="middle" class="m">terraform apply</text>
+          <line class="ln-d" x1="390" y1="42" x2="390" y2="68" marker-end="url(#a3)"/>
+          <text class="lbl" x="400" y="60">creates network · volume · 2 containers</text>
+
+          <!-- nodes -->
+          <rect class="node" x="10" y="150" width="100" height="80" rx="4"/>
+          <text x="60" y="187" text-anchor="middle">Browser</text>
+          <text class="sub" x="60" y="205" text-anchor="middle">localhost:3000</text>
+
+          <rect class="node" x="190" y="150" width="130" height="80" rx="4"/>
+          <text x="255" y="187" text-anchor="middle">Open WebUI</text>
+          <text class="sub" x="255" y="205" text-anchor="middle">chat UI · volume</text>
+
+          <rect class="node-a" x="440" y="120" width="160" height="260" rx="4"/>
+          <text x="520" y="148" text-anchor="middle">agent</text>
+          <text class="sub" x="520" y="165" text-anchor="middle">FastAPI · loop.py</text>
+          <rect class="node" x="470" y="310" width="100" height="50" rx="4"/>
+          <text x="520" y="332" text-anchor="middle" class="m">calculator()</text>
+          <text class="sub" x="520" y="348" text-anchor="middle">safe AST</text>
+
+          <rect class="node" x="720" y="150" width="240" height="80" rx="4"/>
+          <text x="840" y="187" text-anchor="middle">Ollama</text>
+          <text class="sub" x="840" y="205" text-anchor="middle">qwen3:4b · about 2.6 GB</text>
+
+          <rect class="node" x="720" y="310" width="240" height="50" rx="4"/>
+          <text x="840" y="340" text-anchor="middle" class="m">scripts/bootstrap.sh</text>
+
+          <!-- request paths -->
+          <line class="ln" x1="110" y1="190" x2="190" y2="190" marker-start="url(#a1)" marker-end="url(#a1)"/>
+          <text class="lbl" x="150" y="180" text-anchor="middle">HTTP</text>
+
+          <line class="ln" x1="320" y1="190" x2="440" y2="190" marker-start="url(#a1)" marker-end="url(#a1)"/>
+          <text class="lbl" x="380" y="180" text-anchor="middle">OpenAI API</text>
+          <text class="lbl" x="380" y="208" text-anchor="middle">chat completions</text>
+
+          <line class="ln" x1="600" y1="190" x2="720" y2="190" marker-start="url(#a1)" marker-end="url(#a1)"/>
+          <text class="lbl" x="660" y="180" text-anchor="middle">/api/chat</text>
+          <text class="lbl" x="660" y="208" text-anchor="middle">host.docker.internal</text>
+
+          <!-- tool path inside agent -->
+          <line class="ln-a" x1="490" y1="240" x2="490" y2="308" marker-end="url(#a2)"/>
+          <line class="ln-a" x1="552" y1="308" x2="552" y2="240" marker-end="url(#a2)"/>
+          <text class="lbl-a" x="482" y="262" text-anchor="end">tool_call</text>
+          <text class="lbl-a" x="560" y="286">result</text>
+          <text class="sub" x="520" y="226" text-anchor="middle">runs the loop</text>
+
+          <!-- bootstrap -->
+          <line class="ln-d" x1="840" y1="310" x2="840" y2="232" marker-end="url(#a3)"/>
+          <text class="lbl" x="850" y="276">ollama pull qwen3:4b</text>
+        </svg>
+      </div>
+      <figcaption>Ollama stays on the host because Docker on macOS cannot use the Apple GPU. The agent, not Open WebUI, owns the loop, so every model turn and tool call is visible in one log. Open WebUI sees the agent as an ordinary OpenAI-style model.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What happens on each question</h2>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 1000 270" role="img" aria-label="The agent sends messages and tools to the model. If the reply contains tool calls, it runs the calculator, appends the result and calls the model again. If not, the reply is the final answer. After five rounds it stops.">
+          <defs>
+            <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="mk" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="mk-a" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="mk-d" d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+
+          <rect class="node" x="10" y="95" width="140" height="60" rx="4"/>
+          <text x="80" y="121" text-anchor="middle">User asks</text>
+          <text class="sub m" x="80" y="139" text-anchor="middle">17 × 23 + 4 ?</text>
+
+          <rect class="node" x="200" y="95" width="150" height="60" rx="4"/>
+          <text x="275" y="121" text-anchor="middle">Call the model</text>
+          <text class="sub" x="275" y="139" text-anchor="middle">messages + tools</text>
+
+          <polygon class="node" points="470,70 565,125 470,180 375,125"/>
+          <text x="470" y="129" text-anchor="middle" class="m">tool_calls?</text>
+
+          <rect class="node-a" x="400" y="210" width="140" height="48" rx="4"/>
+          <text x="470" y="232" text-anchor="middle" class="m">calculator()</text>
+          <text class="sub" x="470" y="248" text-anchor="middle">"17*23+4" → 395</text>
+
+          <rect class="node" x="680" y="95" width="150" height="60" rx="4"/>
+          <text x="755" y="121" text-anchor="middle">Final answer</text>
+          <text class="sub" x="755" y="139" text-anchor="middle">"…is 395."</text>
+
+          <rect class="node" x="200" y="8" width="150" height="34" rx="4" style="stroke-dasharray:4 3"/>
+          <text x="275" y="30" text-anchor="middle" class="sub">stop after 5 rounds</text>
+
+          <!-- flow -->
+          <line class="ln" x1="150" y1="125" x2="198" y2="125" marker-end="url(#b1)"/>
+          <line class="ln" x1="350" y1="125" x2="373" y2="125" marker-end="url(#b1)"/>
+          <line class="ln" x1="565" y1="125" x2="678" y2="125" marker-end="url(#b1)"/>
+          <text class="lbl" x="620" y="116" text-anchor="middle">no</text>
+          <line class="ln-a" x1="470" y1="180" x2="470" y2="208" marker-end="url(#b2)"/>
+          <text class="lbl-a" x="480" y="198">yes</text>
+          <polyline class="ln-a" points="400,234 275,234 275,157" marker-end="url(#b2)"/>
+          <text class="lbl-a" x="285" y="200">append result, call again</text>
+          <line class="ln-d" x1="275" y1="93" x2="275" y2="44" marker-end="url(#b3)"/>
+          <text class="lbl" x="285" y="72">round 6 would start</text>
+        </svg>
+      </div>
+      <figcaption>The only exit is a reply with no tool calls, or the round cap. A tool error is sent back to the model as text, so it can correct its own arguments.</figcaption>
+    </figure>
+
+    <table style="margin-top:18px">
+      <thead><tr><th>Round</th><th>Who</th><th>Message</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td><span class="tag">model</span></td><td>Asks for <code>calculator</code> with <code>{"expression": "17*23+4"}</code></td></tr>
+        <tr><td class="num">1</td><td><span class="tag tool">tool</span></td><td>Returns <code>395</code>, appended to the messages</td></tr>
+        <tr><td class="num">2</td><td><span class="tag">model</span></td><td>No tool call, replies "17 × 23 + 4 is 395."</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Memory on a 24 GB MacBook</h2>
+    <div class="bar" role="img" aria-label="About 4.6 of 24 gigabytes used: model weights 2.6, Docker containers 1.5, context cache 0.5">
+      <span class="b1" style="width:10.8%"></span><span class="b2" style="width:6.3%"></span><span class="b3" style="width:2.1%"></span>
+    </div>
+    <div class="scale"><span>0</span><span>24 GB</span></div>
+    <div class="legend">
+      <span><i class="b1"></i>qwen3:4b weights 2.6 GB</span>
+      <span><i class="b2"></i>Open WebUI + agent 1.5 GB</span>
+      <span><i class="b3"></i>context cache 0.5 GB</span>
+    </div>
+    <p style="margin-top:14px;color:var(--muted)">About 4.6 GB in total, under a fifth of memory. The model unloads after 5 idle minutes. The 14B model already pulled would take 9.3 GB, so the plan uses the 4B tag.</p>
+  </section>
+</main>

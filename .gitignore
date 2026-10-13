@@ -1,0 +1,5 @@
+.terraform/
+*.tfstate*
+*.tfvars
+__pycache__/
+ECC/
