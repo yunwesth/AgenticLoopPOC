@@ -21,9 +21,11 @@ files from `./ECC` rather than expecting them to be loaded automatically.
 ## Progress log
 
 ### Current state
-Agentic loop is BUILT and running. `make up` = bootstrap (dedicated Ollama on host :11435, qwen3:4b) + `tofu apply` (network, volume, `agentloop-agent` :8000, `agentloop-openwebui` :3000). Verified: `make test` (9 unit tests), `make smoke` (395, 1 calculator call), and a chat through Open WebUI's API returning the right answer. Plan/diagram: `docs/agentic-loop-plan.md`, artifact https://claude.ai/artifact/3MRZGm3HAJUiBRgCfeAde7.
+Agentic loop is BUILT but currently STOPPED (to save memory; `make up` restarts it). `make up` = bootstrap (dedicated Ollama on host :11435, qwen3:4b) + `tofu apply` (network, volume, `agentloop-agent` :8000, `agentloop-openwebui` :3000). Verified: `make test` (9 unit tests), `make smoke` (395, 1 calculator call), and a chat through Open WebUI's API returning the right answer. Plan/diagram: `docs/agentic-loop-plan.md`, artifact https://claude.ai/artifact/3MRZGm3HAJUiBRgCfeAde7.
 
 ### Next steps
+- [ ] Answer pending offer: add `.env` / `.env.example` to `.gitignore`, verify `git status` shows no tfstate before pushing
+- [ ] Genericize the colima path in `infra/variables.tf`
 - [ ] Check the live trace renders well in the browser chat (blockquote above each answer)
 - [ ] Try it in the browser at http://localhost:3000 (model "calc-agent")
 - [ ] Add a second tool / multi-step test cases; consider streaming real tokens
@@ -39,6 +41,12 @@ Agentic loop is BUILT and running. `make up` = bootstrap (dedicated Ollama on ho
 - Machine: M5 Pro, 24 GB. Colima VM is allocated 20 GiB; `qwen3:14b` (9.3 GB) is already pulled but too big for the plan.
 
 ### Session history (newest first)
+#### 2026-10-12 — Stop stack, README, secrets check before git upload
+- Stack stopped to save memory (run `make up` to resume). Added a README mentioning the artifact URL.
+- Secrets audit (no code changes): no real secrets. `OPENAI_API_KEY=local` in `infra/main.tf` is a dummy; WEBUI_AUTH is off; Open WebUI's secret key lives in the Docker volume.
+- Pre-upload advice given: `.gitignore` already excludes tfstate, `.terraform/`, `*.tfvars` and `ECC/` (nested clone; use a submodule if wanted). `infra/variables.tf` has a personal `/Users/yunwesth/.colima/...` path to genericize. If a real key is added later, use `.env` (gitignored) plus a `sensitive` tofu variable.
+- Offered to add `.env`/`.env.example` to `.gitignore`; user hadn't answered yet. Repo now has an "Initial Commit" on main.
+
 #### 2026-10-12 — Audit log + visible loop
 - `agent/trace.py` (JSONL audit at /data/audit.jsonl in volume `agentloop_audit`, live trace text, strip_trace for history), `loop.run_agent(emit=)` events, real SSE streaming in `app.py`, `GET /audit`
 - Open WebUI `AUDIT_LOG_LEVEL=REQUEST_RESPONSE` (file /app/backend/data/audit.log)
